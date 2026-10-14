@@ -1,186 +1,225 @@
-window.appState = {
-  activeFocusIndex: 1,      // Active focus model index (1, 2, or 3)
-  detectedMarkers: new Set(),// Indices of markers currently in camera field of view
-  modelRotations: { 1: 0, 2: 0, 3: 0 }, // Model Y-axis rotation in degrees
-  cameraStreamActive: false
-};
-
-window.modelData = {
-  1: { name: "Robot Alpha", desc: "Interactive Android with Energy Visor & Chest Core", wrapperId: "model-wrapper-1" },
-  2: { name: "Titan Mecha", desc: "Heavy Tactical Bipedal Mech with Shoulder Cannons", wrapperId: "model-wrapper-2" },
-  3: { name: "Motherboard Hub", desc: "3D Microchip Architecture with RAM & Heat Sink", wrapperId: "model-wrapper-3" }
-};
-
-/* ==========================================================================
-   A-FRAME CUSTOM TRACKING COMPONENT
-   ========================================================================== */
-if (typeof AFRAME !== 'undefined') {
-  AFRAME.registerComponent('registerevents', {
-    schema: { markerId: { type: 'string', default: '' }, markerIndex: { type: 'int', default: 1 } },
-    init: function () {
-      const el = this.el;
-      const index = this.data.markerIndex;
-      const name = this.data.markerId;
-
-      el.addEventListener('markerFound', () => {
-        window.appState.detectedMarkers.add(index);
-        window.appState.activeFocusIndex = index;
-        updateStatus('detected', `Detected: ${name}`);
-        updateInfoPanel(index);
-        highlightTab(index);
-      });
-
-      el.addEventListener('markerLost', () => {
-        window.appState.detectedMarkers.delete(index);
-        if (window.appState.detectedMarkers.size === 0) {
-          updateStatus('ready', 'Point camera at a marker');
-        } else {
-          const remainingIndex = Array.from(window.appState.detectedMarkers)[0];
-          window.appState.activeFocusIndex = remainingIndex;
-          updateStatus('detected', `Detected: ${window.modelData[remainingIndex].name}`);
-          updateInfoPanel(remainingIndex);
-          highlightTab(remainingIndex);
-        }
-      });
+(() => {
+  "use strict";
+  const data = {
+    1: {
+      name: "Robot Alpha",
+      desc: "Robot with a glowing visor and chest core.",
+      root: "model-1",
+      marker: "Hiro",
+    },
+    2: {
+      name: "Titan Mecha",
+      desc: "Armored mecha with shoulder cannons.",
+      root: "model-2",
+      marker: "Kanji",
+    },
+    3: {
+      name: "Motherboard Hub",
+      desc: "Miniature motherboard with RAM and expansion slots.",
+      root: "model-3",
+      marker: "Letter A",
+    },
+  };
+  const state = {
+    selected: 1,
+    detected: new Set(),
+    cameraReady: false,
+    starting: false,
+  };
+  const $ = (id) => document.getElementById(id),
+    status = $("status"),
+    statusText = $("status-text"),
+    startPanel = $("start-panel"),
+    startButton = $("start-button"),
+    startError = $("start-error"),
+    arRoot = $("ar-root"),
+    helpPanel = $("help-panel");
+  function setStatus(kind, message) {
+    status.className = "status" + (kind ? " " + kind : "");
+    statusText.textContent = message;
+  }
+  function setInfo(i) {
+    $("model-name").textContent = data[i].name;
+    $("model-desc").textContent =
+      data[i].desc + " Marker: " + data[i].marker + ".";
+  }
+  function select(i, fromMarker = false) {
+    state.selected = i;
+    document.querySelectorAll("[data-select]").forEach((b) => {
+      let active = +b.dataset.select === i;
+      b.classList.toggle("selected", active);
+      b.setAttribute("aria-pressed", String(active));
+    });
+    setInfo(i);
+    if (!fromMarker && state.cameraReady)
+      setStatus(
+        state.detected.has(i) ? "detected" : "ready",
+        state.detected.has(i)
+          ? "Detected: " + data[i].name
+          : "Selected " + data[i].name + " — scan " + data[i].marker,
+      );
+  }
+  function markerEvent(i, found) {
+    if (found) {
+      state.detected.add(i);
+      select(i, true);
+      setStatus("detected", "Detected: " + data[i].name);
+    } else {
+      state.detected.delete(i);
+      if (state.detected.has(state.selected)) {
+        setStatus("detected", "Detected: " + data[state.selected].name);
+      } else if (state.detected.size) {
+        let remaining = [...state.detected].pop();
+        select(remaining, true);
+        setStatus("detected", "Detected: " + data[remaining].name);
+      } else if (state.cameraReady)
+        setStatus("ready", "Marker lost — point at a marker");
     }
-  });
-}
-
-/* ==========================================================================
-   DOM INITIALIZATION & CAMERA PERMISSIONS
-   ========================================================================== */
-document.addEventListener('DOMContentLoaded', () => {
-  const statusBadge = document.getElementById('status-badge');
-  const statusText = document.getElementById('status-text');
-  const infoPanel = document.getElementById('info-panel');
-  const modelTitle = document.getElementById('active-model-title');
-  const modelDesc = document.getElementById('active-model-desc');
-  const startModal = document.getElementById('start-modal');
-  const guideModal = document.getElementById('guide-modal');
-  const cameraErrorBanner = document.getElementById('camera-error-banner');
-  const arSceneContainer = document.getElementById('ar-scene-container');
-  const startArBtn = document.getElementById('start-ar-btn');
-
-  // Camera Startup Button Event Handler
-  if (startArBtn) {
-    startArBtn.addEventListener('click', async () => {
-      startArBtn.disabled = true;
-      startArBtn.textContent = "Requesting Camera Access...";
-
-      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-      if (window.location.protocol !== 'https:' && !isLocalhost) {
-        showCameraError("<strong>Security Context Error:</strong> Camera access requires HTTPS hosting (e.g., GitHub Pages) or Localhost.");
-        resetStartButton();
-        return;
-      }
-
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        showCameraError("<strong>Unsupported Browser:</strong> Camera API is not supported in this browser.");
-        resetStartButton();
-        return;
-      }
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-        window.appState.cameraStreamActive = true;
-        stream.getTracks().forEach(track => track.stop());
-
-        arSceneContainer.classList.remove('ar-hidden');
-        startModal.classList.add('hidden');
-        infoPanel.classList.remove('hidden');
-        updateStatus('ready', 'Point camera at a marker');
-      } catch (err) {
-        console.error("Camera Access Error:", err);
-        showCameraError("<strong>Camera Access Denied:</strong> Permission was denied or device camera is busy.");
-        resetStartButton();
-      }
+  }
+  if (window.AFRAME) {
+    AFRAME.registerComponent("app-marker-events", {
+      schema: { index: { type: "int" } },
+      init() {
+        this.el.addEventListener("markerFound", () =>
+          markerEvent(this.data.index, true),
+        );
+        this.el.addEventListener("markerLost", () =>
+          markerEvent(this.data.index, false),
+        );
+      },
     });
   }
-
-  function showCameraError(msg) {
-    if (cameraErrorBanner) {
-      cameraErrorBanner.style.display = 'block';
-      cameraErrorBanner.innerHTML = msg;
-    }
-    updateStatus('error', 'Camera Startup Failed');
-  }
-
-  function resetStartButton() {
-    if (startArBtn) {
-      startArBtn.disabled = false;
-      startArBtn.textContent = "Retry Starting Camera";
-    }
-  }
-
-  // Model Tab Selection Switcher
-  window.selectModelTab = function(index) {
-    window.appState.activeFocusIndex = index;
-    highlightTab(index);
-    updateInfoPanel(index);
-
-    if (window.appState.detectedMarkers.has(index)) {
-      updateStatus('detected', `Detected: ${window.modelData[index].name}`);
-    } else {
-      updateStatus('ready', `Active Focus: ${window.modelData[index].name}`);
-    }
-  };
-
-  function highlightTab(index) {
-    for (let i = 1; i <= 3; i++) {
-      const tab = document.getElementById(`tab-${i}`);
-      if (tab) {
-        if (i === index) {
-          tab.classList.add('active');
-          tab.setAttribute('aria-selected', 'true');
-        } else {
-          tab.classList.remove('active');
-          tab.setAttribute('aria-selected', 'false');
-        }
-      }
-    }
-  }
-
-  // Transform Controls
-  document.getElementById('rotate-left-btn')?.addEventListener('click', () => rotateActiveModel(-25));
-  document.getElementById('rotate-right-btn')?.addEventListener('click', () => rotateActiveModel(25));
-
-  function rotateActiveModel(delta) {
-    const idx = window.appState.activeFocusIndex;
-    window.appState.modelRotations[idx] = (window.appState.modelRotations[idx] + delta) % 360;
-    const targetWrapper = document.getElementById(window.modelData[idx].wrapperId);
-    if (targetWrapper) targetWrapper.setAttribute('rotation', `0 ${window.appState.modelRotations[idx]} 0`);
-  }
-
-  document.getElementById('reset-btn')?.addEventListener('click', () => {
-    const idx = window.appState.activeFocusIndex;
-    window.appState.modelRotations[idx] = 0;
-    const targetWrapper = document.getElementById(window.modelData[idx].wrapperId);
-    if (targetWrapper) {
-      targetWrapper.setAttribute('rotation', '0 0 0');
-      targetWrapper.setAttribute('position', '0 0 0');
-      targetWrapper.setAttribute('scale', '0.6 0.6 0.6');
-    }
-    updateStatus('ready', `Reset ${window.modelData[idx].name} transform`);
+  const scene = $("ar-scene");
+  scene.addEventListener("loaded", () => {
+    [
+      ["marker-robot", 1],
+      ["marker-mecha", 2],
+      ["marker-board", 3],
+    ].forEach(([id, index]) => {
+      const marker = $(id);
+      if (
+        marker &&
+        (!marker.components || !marker.components["app-marker-events"])
+      )
+        marker.setAttribute("app-marker-events", "index: " + index);
+    });
   });
-
-  // Modal Handlers
-  document.getElementById('help-btn')?.addEventListener('click', () => guideModal?.classList.remove('hidden'));
-  document.getElementById('close-guide-btn')?.addEventListener('click', () => guideModal?.classList.add('hidden'));
-
-  function updateStatus(type, message) {
-    if (!statusText || !statusBadge) return;
-    statusText.textContent = message;
-    statusBadge.className = 'status-badge';
-    if (type === 'ready') statusBadge.classList.add('status-ready');
-    else if (type === 'detected') statusBadge.classList.add('status-detected');
-    else if (type === 'error') statusBadge.classList.add('status-error');
+  document
+    .querySelectorAll("[data-select]")
+    .forEach((b) =>
+      b.addEventListener("click", () => select(+b.dataset.select)),
+    );
+  function rotate(degrees) {
+    let root = $(data[state.selected].root);
+    if (!root) return setStatus("error", "Model unavailable — reload the page");
+    let r = root.getAttribute("rotation") || { x: 0, y: 0, z: 0 };
+    root.setAttribute("rotation", { x: r.x, y: r.y + degrees, z: r.z });
+    setStatus(
+      state.detected.has(state.selected) ? "detected" : "ready",
+      data[state.selected].name + " rotated",
+    );
   }
-
-  function updateInfoPanel(index) {
-    const data = window.modelData[index];
-    if (data && modelTitle && modelDesc) {
-      modelTitle.textContent = data.name;
-      modelDesc.textContent = data.desc;
+  $("rotate-left").addEventListener("click", () => rotate(-25));
+  $("rotate-right").addEventListener("click", () => rotate(25));
+  $("reset").addEventListener("click", () => {
+    let root = $(data[state.selected].root);
+    root.setAttribute("rotation", "0 0 0");
+    root.setAttribute("position", "0 0 0");
+    root.setAttribute("scale", "0.55 0.55 0.55");
+    setStatus(
+      state.detected.has(state.selected) ? "detected" : "ready",
+      data[state.selected].name + " reset",
+    );
+  });
+  $("help-button").addEventListener("click", () =>
+    helpPanel.classList.remove("hidden"),
+  );
+  $("close-help").addEventListener("click", () =>
+    helpPanel.classList.add("hidden"),
+  );
+  function cameraError(e) {
+    if (e?.name === "NotAllowedError" || e?.name === "PermissionDeniedError")
+      return "Camera permission denied. Allow camera access in browser site settings, then reload.";
+    if (e?.name === "NotFoundError")
+      return "No camera was found on this device.";
+    if (e?.name === "NotReadableError")
+      return "The camera may be busy in another app. Close other camera apps and retry.";
+    return "Camera could not start. Check permission, HTTPS, and internet, then retry.";
+  }
+  function waitForVideo(ms) {
+    return new Promise((resolve) => {
+      let start = Date.now();
+      (function poll() {
+        let v =
+          document.querySelector("#ar-root video") ||
+          document.querySelector("video#arjs-video") ||
+          document.querySelector("video");
+        if (v && v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0)
+          resolve(true);
+        else if (Date.now() - start >= ms) resolve(false);
+        else setTimeout(poll, 250);
+      })();
+    });
+  }
+  startButton.addEventListener("click", async () => {
+    if (state.starting) return;
+    state.starting = true;
+    startButton.disabled = true;
+    startButton.textContent = "Requesting camera…";
+    startError.hidden = true;
+    let secure =
+      window.isSecureContext ||
+      location.hostname === "localhost" ||
+      location.hostname === "127.0.0.1";
+    if (!secure) {
+      startError.textContent =
+        "Camera access requires HTTPS or localhost. Publish with GitHub Pages or use a local web server.";
+      startError.hidden = false;
+      setStatus("error", "Secure connection required");
+      return resetStart();
     }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      startError.textContent =
+        "This browser does not support camera access. Try Chrome or Safari.";
+      startError.hidden = false;
+      setStatus("error", "Camera not supported");
+      return resetStart();
+    }
+    try {
+      let stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      stream.getTracks().forEach((t) => t.stop());
+      arRoot.classList.remove("ar-hidden");
+      setStatus("", "Starting AR camera…");
+      let ok = await waitForVideo(15000);
+      if (!ok) {
+        arRoot.classList.add("ar-hidden");
+        startError.textContent =
+          "AR.js did not start a video feed. Check the site camera permission and internet connection, then retry.";
+        startError.hidden = false;
+        setStatus("error", "Camera did not start");
+        startPanel.classList.remove("hidden");
+        return resetStart();
+      }
+      state.cameraReady = true;
+      startPanel.classList.add("hidden");
+      setStatus("ready", "Camera started — point at a marker");
+    } catch (e) {
+      console.error(e);
+      startError.textContent = cameraError(e);
+      startError.hidden = false;
+      setStatus("error", "Camera startup failed");
+    } finally {
+      if (!state.cameraReady) resetStart();
+    }
+  });
+  function resetStart() {
+    state.starting = false;
+    startButton.disabled = false;
+    startButton.textContent = "Retry Start AR Camera";
   }
-});
+  select(1);
+  setStatus("", "Ready to start");
+})();

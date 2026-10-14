@@ -1,0 +1,1 @@
+The Hiro and Kanji markers are AR.js preset patterns. The third Letter A pattern is currently loaded from an external AR.js URL in index.html. To make it local, download pattern-letterA.patt from the AR.js marker-training pattern-files directory into this folder and change the marker URL to assets/markers/pattern-letterA.patt. Marker image URLs are listed in the root README.md.
